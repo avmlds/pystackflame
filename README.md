@@ -61,3 +61,19 @@ During fault-injection experiments, collect and compare flamecharts from healthy
 pystackflame flame healthy.log -o healthy.flame
 pystackflame flame chaos.log   -o chaos.flame
 ```
+
+## Advanced filtering
+
+You can specify an option 
+`--trace-filter / -tf [PATH_PREFIX]`
+to filter tracebacks to include only those paths that start with the given prefix.
+This is useful to restrict the flamechart or graph output to only relevant code paths.
+
+### Usage
+- The filter must start with `/` (absolute path).
+- `*` can be used to match any folder (e.g., `/var/log/app-logs/dates/*/application`).
+- The filter must not end with `/`.
+
+### Result:
+- Only stack trace frames that match the filter will be added to the flamechart or graph.
+- Useful for narrowing down logs to project-specific code or a specific dependency tree.

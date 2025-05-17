@@ -17,13 +17,17 @@ def cli():
     pass
 
 
+@click.option("-tf", "--trace-filter", help="Filter trace paths by prefix. '*' stands for any folder.")
 @click.option("-o", "--output", type=Path, default=DEFAULT_GRAPH_FILENAME)
 @click.argument("log_files", type=Path, nargs=-1)
 @cli.command()
-def graph(log_files, output: Path):
+def graph(log_files, output: Path, trace_filter: str | None):
     """Generate a pickled weighed rustworkx graph."""
     click.echo(f"{datetime.now()} Starting building log graph for: {log_files}")
-    error_graph = build_log_graph(log_files)
+    error_graph = build_log_graph(log_files, trace_filter)
+    if error_graph.num_nodes() == 0:
+        raise click.ClickException("Graph is empty, please check filters, if applied.")
+
     with output.open("wb") as file:
         pickle.dump(error_graph, file)
 
@@ -31,16 +35,20 @@ def graph(log_files, output: Path):
     click.echo(f"{datetime.now()} Result saved at {output.expanduser().absolute()}")
 
 
+@click.option("-tf", "--trace-filter", help="Filter trace paths by prefix. '*' stands for any folder.")
 @click.option("-o", "--output", type=Path, default=DEFAULT_FLAME_CHART_FILENAME)
 @click.argument("log_files", type=Path, nargs=-1, required=True)
 @cli.command("flame")
-def flame_chart(log_files, output: Path):
+def flame_chart(log_files, output: Path, trace_filter: str | None):
     """Generate standard flame chart data.
 
     Output is compatible with a visualization tool https://github.com/brendangregg/FlameGraph
     """
     click.echo(f"{datetime.now()} Starting preparing flame chart data for: {log_files}")
-    errors_dict = build_flame_chart_data(log_files)
+    errors_dict = build_flame_chart_data(log_files, trace_filter)
+    if not errors_dict:
+        raise click.ClickException("Flame chart data is empty, please check filters, if applied.")
+
     with output.open("w") as file:
         for error_path, n_errors in errors_dict.items():
             line = ";".join(error_path) + f" {n_errors}\n"

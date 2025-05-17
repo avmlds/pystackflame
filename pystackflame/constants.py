@@ -6,3 +6,5 @@ TRACEBACK_ERROR_STACK_LINE = re.compile(r"\s+File\s\"(\S+)\",\sline\s(\d+),\sin\
 TRACEBACK_ERROR_END_LINE = re.compile(r"^\S+")
 DEFAULT_GRAPH_FILENAME = "error_graph.pkl"
 DEFAULT_FLAME_CHART_FILENAME = "error_graph.flame"
+WILDCARD_FILTER = "*"
+TRACE_FILTER_DELIMITER = "/"

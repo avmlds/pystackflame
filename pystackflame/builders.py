@@ -9,9 +9,11 @@ import rustworkx as rx
 
 from pystackflame.constants import (
     DEFAULT_ENCODING,
+    TRACE_FILTER_DELIMITER,
     TRACEBACK_ERROR_END_LINE,
     TRACEBACK_ERROR_STACK_LINE,
     TRACEBACK_ERROR_START_LINE,
+    WILDCARD_FILTER,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,33 @@ def get_traceback_error_stack_line(line: str) -> re.Match | None:
 
 def is_traceback_end_line(line: str) -> bool:
     return TRACEBACK_ERROR_END_LINE.match(line) is not None
+
+
+def prepare_trace_filter(trace_filter: str | None) -> list[str]:
+    if trace_filter is None:
+        return []
+
+    if not trace_filter.startswith(TRACE_FILTER_DELIMITER):
+        raise ValueError(f"Filter must start with a {TRACE_FILTER_DELIMITER}")
+
+    if trace_filter.endswith(TRACE_FILTER_DELIMITER):
+        raise ValueError(f"Filter cannot end on a {TRACE_FILTER_DELIMITER}")
+
+    return [TRACE_FILTER_DELIMITER, *trace_filter.split(TRACE_FILTER_DELIMITER)[1:]]
+
+
+def filter_trace_path(trace_path: list[str], trace_filter_list: list[str]):
+    if len(trace_path) < len(trace_filter_list):
+        return []
+
+    trace_pointer = 0
+    for trace_filter in trace_filter_list:
+        if trace_filter == trace_path[trace_pointer] or trace_filter == WILDCARD_FILTER:
+            trace_pointer += 1
+        else:
+            return []
+
+    return trace_path[trace_pointer:]
 
 
 def error_generator(file: TextIO) -> Generator[tuple[Path, int, str]]:
@@ -52,14 +81,10 @@ def error_generator(file: TextIO) -> Generator[tuple[Path, int, str]]:
 
 def enrich_issue_graph(
     issue_graph: rx.PyDiGraph,
-    error: tuple[Path, int, str],
+    path_parts: list[str],
     node_graph_id_dict: dict[str, int],
     edge_graph_id_dict: dict[tuple[str, str], int],
 ) -> None:
-    file_path, row_number, python_object_name = error
-    path_parts = list(file_path.parts)
-    path_parts.append(python_object_name)
-
     parent = path_parts[0]
     if parent not in node_graph_id_dict:
         node_graph_id_dict[parent] = issue_graph.add_node({"name": parent})
@@ -73,18 +98,32 @@ def enrich_issue_graph(
         parent = path_part
 
 
-def build_log_graph(files: list[Path]) -> rx.PyDiGraph:
+def build_log_graph(files: list[Path], trace_filter: str | None) -> rx.PyDiGraph:
     issue_graph = rx.PyDiGraph()
     node_graph_id_dict = {}
     edge_graph_id_dict = defaultdict(int)
-
+    trace_filter_list = prepare_trace_filter(trace_filter)
     for path in files:
         try:
             with open(path, encoding=DEFAULT_ENCODING) as file:
                 for error in error_generator(file):
+                    file_path, row_number, python_object_name = error
+                    path_parts = filter_trace_path(
+                        list(file_path.parts),
+                        trace_filter_list,
+                    )
+                    if not path_parts:
+                        logger.info(
+                            "Skipping path '%s' as it doesn't match trace filter '%s'",
+                            error[0],
+                            trace_filter,
+                        )
+                        continue
+
+                    path_parts.append(python_object_name)
                     enrich_issue_graph(
                         issue_graph=issue_graph,
-                        error=error,
+                        path_parts=path_parts,
                         node_graph_id_dict=node_graph_id_dict,
                         edge_graph_id_dict=edge_graph_id_dict,
                     )
@@ -100,13 +139,26 @@ def build_log_graph(files: list[Path]) -> rx.PyDiGraph:
     return issue_graph
 
 
-def build_flame_chart_data(files: list[Path]) -> dict[tuple[str, ...], int]:
+def build_flame_chart_data(files: list[Path], trace_filter: str | None) -> dict[tuple[str, ...], int]:
     flame_chart_dict = defaultdict(int)
+    trace_filter_list = prepare_trace_filter(trace_filter)
     for path in files:
         try:
             with path.open("r") as file:
                 for error in error_generator(file):
-                    full_path = tuple([*error[0].parts, error[2]])
+                    path_parts = filter_trace_path(
+                        list(error[0].parts),
+                        trace_filter_list,
+                    )
+                    if not path_parts:
+                        logger.info(
+                            "Skipping path '%s' as it doesn't match trace filter '%s'",
+                            error[0],
+                            trace_filter,
+                        )
+                        continue
+
+                    full_path = tuple([*path_parts, error[2]])
                     flame_chart_dict[full_path] += 1
 
         except FileNotFoundError:
