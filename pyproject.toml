@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pystackflame"
+version = "0.1.0"
+description = "Generate flamecharts and error graphs from python stacktraces"
+authors = [{name = "Alexander"}]
+license = {text = "MIT"}
+classifiers=[
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Logging",
+    "Topic :: Utilities",
+]
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "click>=8.2.0",
+    "rustworkx>=0.16.0",
+]
+
+
+[project.optional-dependencies]
+dev=[
+    "ruff==0.11.10",
+]
+[project.scripts]
+pystackflame = "pystackflame.__main__:cli"
+
+[tool.setuptools.packages.find]
+include = ["pystackflame", "pystackflame.*"]
+
+[tool.ruff]
+line-length = 125
+exclude = [
+    "build",
+    ".venv",
+    "*.egg-info"
+]
+lint.extend-select = [
+    "I",
+    "F",
+    "PL",
+    "UP",
+]
