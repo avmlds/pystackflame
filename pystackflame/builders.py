@@ -1,7 +1,7 @@
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from pathlib import Path
 from typing import TextIO
 
@@ -19,19 +19,19 @@ from pystackflame.constants import (
 logger = logging.getLogger(__name__)
 
 
-def is_traceback_start_line(line: str) -> bool:
+def _is_traceback_start_line(line: str) -> bool:
     return TRACEBACK_ERROR_START_LINE.match(line) is not None
 
 
-def get_traceback_error_stack_line(line: str) -> re.Match | None:
+def _get_traceback_error_stack_line(line: str) -> re.Match | None:
     return TRACEBACK_ERROR_STACK_LINE.match(line)
 
 
-def is_traceback_end_line(line: str) -> bool:
+def _is_traceback_end_line(line: str) -> bool:
     return TRACEBACK_ERROR_END_LINE.match(line) is not None
 
 
-def prepare_trace_filter(trace_filter: str | None) -> list[str]:
+def _prepare_filter(trace_filter: str | None) -> list[str]:
     if trace_filter is None:
         return []
 
@@ -44,31 +44,58 @@ def prepare_trace_filter(trace_filter: str | None) -> list[str]:
     return [TRACE_FILTER_DELIMITER, *trace_filter.split(TRACE_FILTER_DELIMITER)[1:]]
 
 
-def filter_trace_path(trace_path: list[str], trace_filter_list: list[str]):
+def build_trace_path_excludes(exclude_filters: Iterable[str]) -> list[list[str]]:
+    return sorted(_prepare_filter(exclude_filter) for exclude_filter in exclude_filters)
+
+
+def filter_trace_path(trace_path: list[str], trace_filter_list: list[str]) -> list[str] | None:
     if len(trace_path) < len(trace_filter_list):
-        return []
+        return None
 
     trace_pointer = 0
     for trace_filter in trace_filter_list:
         if trace_filter == trace_path[trace_pointer] or trace_filter == WILDCARD_FILTER:
             trace_pointer += 1
         else:
-            return []
+            return None
 
     return trace_path[trace_pointer:]
+
+
+def _trace_path_is_excluded(trace_path_parts: list[str], exclude_paths: list[list[str]]) -> bool:
+    for exclude_path in exclude_paths:
+        if filter_trace_path(trace_path_parts, exclude_path) is not None:
+            return True
+
+    return False
+
+
+def get_filtered_error_trace(
+    file_path_parts: list[str],
+    trace_filter_list: list[str],
+    trace_path_excludes: list[list[str]],
+) -> list[str] | None:
+    path_parts = filter_trace_path(
+        file_path_parts,
+        trace_filter_list,
+    )
+    if path_parts is None or _trace_path_is_excluded(file_path_parts, trace_path_excludes):
+        return None
+
+    return path_parts
 
 
 def error_generator(file: TextIO) -> Generator[tuple[Path, int, str]]:
     in_frame = False
     for line in file:
         if not in_frame:
-            in_frame = is_traceback_start_line(line)
+            in_frame = _is_traceback_start_line(line)
 
         if not in_frame:
             continue
 
         if in_frame:
-            stack_line = get_traceback_error_stack_line(line)
+            stack_line = _get_traceback_error_stack_line(line)
             if stack_line is None:
                 continue
 
@@ -76,7 +103,7 @@ def error_generator(file: TextIO) -> Generator[tuple[Path, int, str]]:
             yield Path(path), int(line_number), python_object_name
 
         if in_frame:
-            in_frame = not is_traceback_end_line(line)
+            in_frame = not _is_traceback_end_line(line)
 
 
 def enrich_issue_graph(
@@ -98,38 +125,48 @@ def enrich_issue_graph(
         parent = path_part
 
 
-def build_log_graph(files: list[Path], trace_filter: str | None) -> rx.PyDiGraph:
+def read_errors(file_paths: list[Path]) -> Generator[tuple[Path, int, str]]:
+    for path in file_paths:
+        try:
+            with open(path, encoding=DEFAULT_ENCODING) as file:
+                yield from error_generator(file)
+
+        except FileNotFoundError:
+            logger.error("Cannot open %s", path)
+
+
+def build_log_graph(
+    files: list[Path],
+    trace_filter: str | None,
+    trace_path_excludes: list[list[str]],
+) -> rx.PyDiGraph:
     issue_graph = rx.PyDiGraph()
     node_graph_id_dict = {}
     edge_graph_id_dict = defaultdict(int)
-    trace_filter_list = prepare_trace_filter(trace_filter)
-    for path in files:
-        try:
-            with open(path, encoding=DEFAULT_ENCODING) as file:
-                for error in error_generator(file):
-                    file_path, row_number, python_object_name = error
-                    path_parts = filter_trace_path(
-                        list(file_path.parts),
-                        trace_filter_list,
-                    )
-                    if not path_parts:
-                        logger.info(
-                            "Skipping path '%s' as it doesn't match trace filter '%s'",
-                            error[0],
-                            trace_filter,
-                        )
-                        continue
+    trace_filter_list = _prepare_filter(trace_filter)
 
-                    path_parts.append(python_object_name)
-                    enrich_issue_graph(
-                        issue_graph=issue_graph,
-                        path_parts=path_parts,
-                        node_graph_id_dict=node_graph_id_dict,
-                        edge_graph_id_dict=edge_graph_id_dict,
-                    )
+    for file_path, row_number, python_object_name in read_errors(files):
+        file_path_parts = [*file_path.parts, python_object_name]
+        filtered_error_trace_path_parts = get_filtered_error_trace(
+            file_path_parts,
+            trace_filter_list,
+            trace_path_excludes,
+        )
+        if not filtered_error_trace_path_parts:
+            logger.info(
+                "Skipping path '%s' as it doesn't match trace filter '%s' or one of the exclude filters '%s'",
+                file_path_parts,
+                trace_filter,
+                trace_path_excludes,
+            )
+            continue
 
-        except FileNotFoundError:
-            logger.error("Warning: cannot open %s", path)
+        enrich_issue_graph(
+            issue_graph=issue_graph,
+            path_parts=filtered_error_trace_path_parts,
+            node_graph_id_dict=node_graph_id_dict,
+            edge_graph_id_dict=edge_graph_id_dict,
+        )
 
     for (from_node_name, to_node_name), weight in edge_graph_id_dict.items():
         from_node = node_graph_id_dict[from_node_name]
@@ -139,29 +176,30 @@ def build_log_graph(files: list[Path], trace_filter: str | None) -> rx.PyDiGraph
     return issue_graph
 
 
-def build_flame_chart_data(files: list[Path], trace_filter: str | None) -> dict[tuple[str, ...], int]:
+def build_flame_chart_data(
+    files: list[Path],
+    trace_filter: str | None,
+    trace_path_excludes: list[list[str]],
+) -> dict[tuple[str, ...], int]:
     flame_chart_dict = defaultdict(int)
-    trace_filter_list = prepare_trace_filter(trace_filter)
-    for path in files:
-        try:
-            with path.open("r") as file:
-                for error in error_generator(file):
-                    path_parts = filter_trace_path(
-                        list(error[0].parts),
-                        trace_filter_list,
-                    )
-                    if not path_parts:
-                        logger.info(
-                            "Skipping path '%s' as it doesn't match trace filter '%s'",
-                            error[0],
-                            trace_filter,
-                        )
-                        continue
+    trace_filter_list = _prepare_filter(trace_filter)
 
-                    full_path = tuple([*path_parts, error[2]])
-                    flame_chart_dict[full_path] += 1
+    for file_path, row_number, python_object_name in read_errors(files):
+        file_path_parts = [*file_path.parts, python_object_name]
+        filtered_error_trace_path_parts = get_filtered_error_trace(
+            file_path_parts,
+            trace_filter_list,
+            trace_path_excludes,
+        )
+        if not filtered_error_trace_path_parts:
+            logger.info(
+                "Skipping path '%s' as it doesn't match trace filter '%s' or one of the exclude filters '%s'",
+                file_path_parts,
+                trace_filter,
+                trace_path_excludes,
+            )
+            continue
 
-        except FileNotFoundError:
-            logger.error("Warning: cannot open %s", path)
+        flame_chart_dict[tuple(filtered_error_trace_path_parts)] += 1
 
     return flame_chart_dict

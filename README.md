@@ -66,8 +66,44 @@ pystackflame flame chaos.log   -o chaos.flame
 
 You can specify an option 
 `--trace-filter / -tf [PATH_PREFIX]`
-to filter tracebacks to include only those paths that start with the given prefix.
-This is useful to restrict the flamechart or graph output to only relevant code paths.
+to filter tracebacks to include only those paths that start with the given prefix and 
+filter out the prefix out from the output. This is useful to restrict the flamechart or 
+graph output to only relevant code paths with relevant names.
+
+Additionally, you can specify multiple `--exclude / -e [PATH_PREFIX]` to exclude traces 
+that starts from the given path prefix. Wildcard is supported as well.
+
+### Example
+This command 
+```shell
+pystackflame flame ~/test.log -tf '/opt/app/venv/lib64/python3.9/site-packages' 
+```
+Will produce the following flame data output
+```
+package;database;session.py;wrapper 2
+package;apihelper.py;_make_request 2
+package;apihelper.py;_check_result 2
+```
+And this command
+```shell
+pystackflame flame ~/test.log
+```
+Will give you this
+```shell
+/;opt;app;venv;lib64;python3.9;site-packages;package;database;session.py;wrapper 2
+/;opt;app;venv;lib64;python3.9;site-packages;package;apihelper.py;_make_request 2
+/;opt;app;venv;lib64;python3.9;site-packages;package;apihelper.py;_check_result 2
+```
+However, this command
+```shell
+pystackflame flame ~/test.log -tf '/opt/app/venv/lib64/python3.9/site-packages/package/apihelper.py' 
+```
+Will produce the following output
+```shell
+_make_request 2
+_check_result 2
+```
+
 
 ### Usage
 - The filter must start with `/` (absolute path).
