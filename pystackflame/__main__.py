@@ -14,7 +14,6 @@ logger = logging.getLogger()
 @click.group()
 def cli():
     """Generate FlameGraph-compatible flame chart data and graphs from errors in logfiles."""
-    pass
 
 
 @click.option("-e", "--exclude", multiple=True, help="Exclude trace paths from the output")
@@ -22,10 +21,12 @@ def cli():
 @click.option("-o", "--output", type=Path, default=DEFAULT_GRAPH_FILENAME)
 @click.argument("log_files", type=Path, nargs=-1)
 @cli.command()
-def graph(log_files, output: Path, trace_filter: str | None):
+def graph(log_files, output: Path, trace_filter: str | None, exclude: tuple[str]):
     """Generate a pickled weighed rustworkx graph."""
-    click.echo(f"{datetime.now()} Starting building log graph for: {log_files}")
-    error_graph = build_log_graph(log_files, trace_filter)
+    str_paths = "\n".join(f"- {logfile_path.absolute()}" for logfile_path in log_files)
+    click.echo(f"{datetime.now()} Starting building log graph for:\n{str_paths}")
+    trace_path_excludes = build_trace_path_excludes(exclude)
+    error_graph = build_log_graph(log_files, trace_filter, trace_path_excludes)
     if error_graph.num_nodes() == 0:
         raise click.ClickException("Graph is empty, please check filters, if applied.")
 
@@ -41,12 +42,13 @@ def graph(log_files, output: Path, trace_filter: str | None):
 @click.option("-o", "--output", type=Path, default=DEFAULT_FLAME_CHART_FILENAME)
 @click.argument("log_files", type=Path, nargs=-1, required=True)
 @cli.command("flame")
-def flame_chart(log_files, output: Path, trace_filter: str | None, exclude: tuple[str]):
+def flame_chart(log_files: tuple[Path], output: Path, trace_filter: str | None, exclude: tuple[str]):
     """Generate standard flame chart data.
 
     Output is compatible with a visualization tool https://github.com/brendangregg/FlameGraph
     """
-    click.echo(f"{datetime.now()} Starting preparing flame chart data for: {log_files}")
+    str_paths = "\n".join(f"- {logfile_path.absolute()}" for logfile_path in log_files)
+    click.echo(f"{datetime.now()} Starting preparing flame chart data for:\n{str_paths}")
     trace_path_excludes = build_trace_path_excludes(exclude)
     errors_dict = build_flame_chart_data(
         log_files,
@@ -61,7 +63,7 @@ def flame_chart(log_files, output: Path, trace_filter: str | None, exclude: tupl
             line = ";".join(error_path) + f" {n_errors}\n"
             file.write(line)
 
-    click.echo(f"{datetime.now()} Done preparing flame chart data for: {log_files}")
+    click.echo(f"{datetime.now()} Done preparing flame chart data for:\n{str_paths}")
     click.echo(f"{datetime.now()} Result saved at {output.expanduser().absolute()}")
 
 

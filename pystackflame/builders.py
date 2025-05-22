@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 from collections.abc import Generator, Iterable
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, TypeAlias
 
 import rustworkx as rx
 
@@ -17,6 +17,9 @@ from pystackflame.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+EOS: TypeAlias = bool
+"""End of stack."""
 
 
 def _is_traceback_start_line(line: str) -> bool:
@@ -85,8 +88,9 @@ def get_filtered_error_trace(
     return path_parts
 
 
-def error_generator(file: TextIO) -> Generator[tuple[Path, int, str]]:
+def error_generator(file: TextIO) -> Generator[tuple[tuple[Path, int, str], EOS]]:
     in_frame = False
+    last = None
     for line in file:
         if not in_frame:
             in_frame = _is_traceback_start_line(line)
@@ -94,16 +98,16 @@ def error_generator(file: TextIO) -> Generator[tuple[Path, int, str]]:
         if not in_frame:
             continue
 
-        if in_frame:
-            stack_line = _get_traceback_error_stack_line(line)
-            if stack_line is None:
-                continue
-
+        stack_line = _get_traceback_error_stack_line(line)
+        if stack_line is not None:
             path, line_number, python_object_name = stack_line.groups()
-            yield Path(path), int(line_number), python_object_name
+            last = Path(path), int(line_number), python_object_name
+            yield last, False
 
-        if in_frame:
-            in_frame = not _is_traceback_end_line(line)
+        in_frame = _is_traceback_start_line(line) or not _is_traceback_end_line(line)
+        if not in_frame and last is not None:
+            yield last, True
+            last = None
 
 
 def enrich_issue_graph(
@@ -125,7 +129,7 @@ def enrich_issue_graph(
         parent = path_part
 
 
-def read_errors(file_paths: list[Path]) -> Generator[tuple[Path, int, str]]:
+def read_errors(file_paths: list[Path]) -> Generator[tuple[tuple[Path, int, str], EOS]]:
     for path in file_paths:
         try:
             with open(path, encoding=DEFAULT_ENCODING) as file:
@@ -145,7 +149,12 @@ def build_log_graph(
     edge_graph_id_dict = defaultdict(int)
     trace_filter_list = _prepare_filter(trace_filter)
 
-    for file_path, row_number, python_object_name in read_errors(files):
+    for (file_path, row_number, python_object_name), end_of_stack in read_errors(files):
+        # When we are building graphs, we don't count EOS rows,
+        # because we are more interested in the edge weights.
+        if end_of_stack:
+            continue
+
         file_path_parts = [*file_path.parts, python_object_name]
         filtered_error_trace_path_parts = get_filtered_error_trace(
             file_path_parts,
@@ -184,7 +193,11 @@ def build_flame_chart_data(
     flame_chart_dict = defaultdict(int)
     trace_filter_list = _prepare_filter(trace_filter)
 
-    for file_path, row_number, python_object_name in read_errors(files):
+    for (file_path, row_number, python_object_name), end_of_stack in read_errors(files):
+        # When we are building flamegraph data, we are interested only in the last errors in the trace
+        if not end_of_stack:
+            continue
+
         file_path_parts = [*file_path.parts, python_object_name]
         filtered_error_trace_path_parts = get_filtered_error_trace(
             file_path_parts,
