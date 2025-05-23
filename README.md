@@ -9,8 +9,7 @@
 ## Features
 
 - Generate [FlameGraph](https://github.com/brendangregg/FlameGraph)-compatible output
-- Pickle [rustworkx](https://github.com/Qiskit/rustworkx)-based graphs
-- Build weighted execution graphs from logs using `rustworkx`
+- Build weighted execution graphs from logs and saves them in json format.
 - Python 3.14+ support
 - Fast and lightweight CLI built with `click`
 - Developer-friendly with optional linting via `ruff`

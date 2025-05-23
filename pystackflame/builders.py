@@ -1,11 +1,10 @@
+import itertools
 import logging
 import re
 from collections import defaultdict
 from collections.abc import Generator, Iterable
 from pathlib import Path
 from typing import TextIO, TypeAlias
-
-import rustworkx as rx
 
 from pystackflame.constants import (
     DEFAULT_ENCODING,
@@ -66,11 +65,7 @@ def filter_trace_path(trace_path: list[str], trace_filter_list: list[str]) -> li
 
 
 def _trace_path_is_excluded(trace_path_parts: list[str], exclude_paths: list[list[str]]) -> bool:
-    for exclude_path in exclude_paths:
-        if filter_trace_path(trace_path_parts, exclude_path) is not None:
-            return True
-
-    return False
+    return any(filter_trace_path(trace_path_parts, exclude_path) is not None for exclude_path in exclude_paths)
 
 
 def get_filtered_error_trace(
@@ -110,49 +105,31 @@ def error_generator(file: TextIO) -> Generator[tuple[tuple[Path, int, str], EOS]
             last = None
 
 
-def enrich_issue_graph(
-    issue_graph: rx.PyDiGraph,
-    path_parts: list[str],
-    node_graph_id_dict: dict[str, int],
-    edge_graph_id_dict: dict[tuple[str, str], int],
-) -> None:
-    parent = path_parts[0]
-    if parent not in node_graph_id_dict:
-        node_graph_id_dict[parent] = issue_graph.add_node({"name": parent})
-
-    for path_part in path_parts[1:]:
-        if path_part not in node_graph_id_dict:
-            node_graph_id_dict[path_part] = issue_graph.add_node({"name": path_part})
-
-        key = (parent, path_part)
-        edge_graph_id_dict[key] += 1
-        parent = path_part
-
-
-def read_errors(file_paths: list[Path]) -> Generator[tuple[tuple[Path, int, str], EOS]]:
+def read_errors(file_paths: tuple[Path]) -> Generator[tuple[tuple[Path, int, str], EOS]]:
     for path in file_paths:
-        try:
-            with open(path, encoding=DEFAULT_ENCODING) as file:
-                yield from error_generator(file)
-
-        except FileNotFoundError:
-            logger.error("Cannot open %s", path)
+        with path.open(encoding=DEFAULT_ENCODING) as file:
+            yield from error_generator(file)
 
 
 def build_log_graph(
-    files: list[Path],
+    files: tuple[Path],
     trace_filter: str | None,
     trace_path_excludes: list[list[str]],
-) -> rx.PyDiGraph:
-    issue_graph = rx.PyDiGraph()
-    node_graph_id_dict = {}
-    edge_graph_id_dict = defaultdict(int)
+) -> dict[str, list[dict[str, str | int]]]:
+    nodes = set()
+    intensity_dict = defaultdict(int)
+    edges = defaultdict(int)
     trace_filter_list = _prepare_filter(trace_filter)
 
-    for (file_path, row_number, python_object_name), end_of_stack in read_errors(files):
+    seen = defaultdict(int)
+    for (file_path, _row_number, python_object_name), end_of_stack in read_errors(files):
         # When we are building graphs, we don't count EOS rows,
         # because we are more interested in the edge weights.
         if end_of_stack:
+            for key, intensity in seen.items():
+                intensity_dict[key] += intensity
+
+            seen = defaultdict(int)
             continue
 
         file_path_parts = [*file_path.parts, python_object_name]
@@ -170,30 +147,37 @@ def build_log_graph(
             )
             continue
 
-        enrich_issue_graph(
-            issue_graph=issue_graph,
-            path_parts=filtered_error_trace_path_parts,
-            node_graph_id_dict=node_graph_id_dict,
-            edge_graph_id_dict=edge_graph_id_dict,
-        )
+        for parent, path_part in itertools.pairwise(filtered_error_trace_path_parts):
+            nodes.add(parent)
+            nodes.add(path_part)
+            key = (parent, path_part)
+            if key not in seen:
+                edges[key] += 1
+            seen[key] += 1
 
-    for (from_node_name, to_node_name), weight in edge_graph_id_dict.items():
-        from_node = node_graph_id_dict[from_node_name]
-        to_node = node_graph_id_dict[to_node_name]
-        issue_graph.add_edge(from_node, to_node, {"weight": weight})
-
-    return issue_graph
+    return {
+        "nodes": [{"id": node, "label": node} for node in nodes],
+        "edges": [
+            {
+                "source": from_node,
+                "target": to_node,
+                "weight": weight,
+                "intensity": intensity_dict[(from_node, to_node)],
+            }
+            for (from_node, to_node), weight in edges.items()
+        ],
+    }
 
 
 def build_flame_chart_data(
-    files: list[Path],
+    files: tuple[Path],
     trace_filter: str | None,
     trace_path_excludes: list[list[str]],
 ) -> dict[tuple[str, ...], int]:
     flame_chart_dict = defaultdict(int)
     trace_filter_list = _prepare_filter(trace_filter)
 
-    for (file_path, row_number, python_object_name), end_of_stack in read_errors(files):
+    for (file_path, _row_number, python_object_name), end_of_stack in read_errors(files):
         # When we are building flamegraph data, we are interested only in the last errors in the trace
         if not end_of_stack:
             continue
